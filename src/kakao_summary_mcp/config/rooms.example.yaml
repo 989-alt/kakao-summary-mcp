@@ -1,0 +1,17 @@
+# 카카오톡 오픈채팅 요약 대상 방 등록
+# 실제 사용 시 이 파일을 ~/.kakao-summary-mcp/rooms.yaml 로 복사해 편집하세요.
+
+rooms:
+  - name: "공부방"          # PC카톡에 표시되는 채팅방 정확한 이름
+    enabled: true
+  - name: "부동산방"
+    enabled: false
+
+defaults:
+  date: today               # today | yesterday
+  top_k_per_topic: 10
+  top_k_query: 15
+
+embedding:
+  model: "BAAI/bge-m3"
+  device: "cpu"             # cuda 사용 시 "cuda"

@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kakao-summary-mcp"
+version = "0.1.0"
+description = "MCP server that crawls, summarizes, and semantically searches KakaoTalk OpenChat rooms on Windows."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "sunhak989", email = "989-alt@users.noreply.github.com" }]
+keywords = ["mcp", "kakaotalk", "openchat", "summarization", "semantic-search"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "mcp>=1.0.0",
+    "pyautogui>=0.9.54",
+    "pywinauto>=0.6.8 ; sys_platform == 'win32'",
+    "pyperclip>=1.8.2",
+    "opencv-python>=4.8.0",
+    "pillow>=10.0.0",
+    "pyyaml>=6.0.1",
+    "sentence-transformers>=3.0.0",
+    "chromadb>=0.5.0",
+    "pydantic>=2.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/sunhak989/kakao-summary-mcp"
+Issues = "https://github.com/sunhak989/kakao-summary-mcp/issues"
+
+[project.scripts]
+kakao-summary-mcp = "kakao_summary_mcp.server:main"
+kakao-summary-mcp-probe = "kakao_summary_mcp.probe:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kakao_summary_mcp"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/", "README.md", "pyproject.toml"]
