@@ -26,13 +26,21 @@ def semantic_query(chroma_path: Path, query: str,
                    room: str | None = None, date: str | None = None,
                    top_k: int = 15,
                    model_name: str = "BAAI/bge-m3", device: str = "cpu") -> list[dict]:
-    where: dict = {}
+    clauses: list[dict] = []
     if room:
-        where["room"] = {"$eq": room}
+        clauses.append({"room": {"$eq": room}})
     if date:
-        where["date"] = {"$eq": date}
+        clauses.append({"date": {"$eq": date}})
+
+    if len(clauses) == 0:
+        where: dict | None = None
+    elif len(clauses) == 1:
+        where = clauses[0]
+    else:
+        where = {"$and": clauses}
+
     return chroma_store.search(
-        chroma_path, query, where=where or None, top_k=top_k,
+        chroma_path, query, where=where, top_k=top_k,
         model_name=model_name, device=device,
     )
 
