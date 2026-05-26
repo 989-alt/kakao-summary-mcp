@@ -49,7 +49,9 @@ def search(chroma_path: Path, query: str, where: dict | None = None,
            device: str = "cpu") -> list[dict]:
     col = get_collection(chroma_path)
     q_emb = embed([query], model_name=model_name, device=device)
-    res = col.query(query_embeddings=q_emb, n_results=top_k, where=where or None)
+    # Caller (retriever.semantic_query) owns where-clause validity: it passes
+    # either None or a ChromaDB-valid dict ($and-wrapped when multi-filter).
+    res = col.query(query_embeddings=q_emb, n_results=top_k, where=where)
     out = []
     for i in range(len(res["ids"][0])):
         out.append({

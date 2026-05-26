@@ -46,6 +46,11 @@ Issues = "https://github.com/sunhak989/kakao-summary-mcp/issues"
 kakao-summary-mcp = "kakao_summary_mcp.server:main"
 kakao-summary-mcp-probe = "kakao_summary_mcp.probe:main"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/kakao_summary_mcp"]
 

@@ -45,7 +45,8 @@ class TestTo24h:
 class TestParseFile:
     def test_basic_message_count(self, sample_txt):
         msgs = parse_file(sample_txt, room="test_room")
-        # 5/26: 7 messages (continuation line merges into msg 3), 5/27: 2 messages = 9 total
+        # 5/26: 7 messages ([홍길동]×5, [김철수]×2; the bare continuation line is
+        # appended to the prior message's text, not counted). 5/27: 2 → 9 total.
         assert len(msgs) == 9
 
     def test_sender_fields(self, sample_txt):

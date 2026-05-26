@@ -7,7 +7,6 @@ that semantic_query passes down.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -15,7 +14,9 @@ import kakao_summary_mcp.indexer.chroma_store as chroma_store_mod
 from kakao_summary_mcp.retriever.search import semantic_query
 
 
-FAKE_PATH = Path("/tmp/fake_chroma")
+# search() is monkeypatched in this module, so this path is never opened —
+# it's just a sentinel argument.
+FAKE_PATH = Path("fake_chroma")
 
 
 def _capture_where(chroma_path, query, where=None, top_k=15,

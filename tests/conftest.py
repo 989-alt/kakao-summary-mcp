@@ -2,8 +2,13 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import pathlib
 
 import pytest
+
+# Disable ChromaDB anonymized telemetry so the e2e test never attempts network.
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
 
 
 # ---------------------------------------------------------------------------
@@ -27,9 +32,8 @@ SAMPLE_TXT = """\
 
 
 @pytest.fixture
-def sample_txt(tmp_path) -> "pathlib.Path":
+def sample_txt(tmp_path) -> pathlib.Path:
     """Write the sample KakaoTalk export to a temp file and return the path."""
-    import pathlib
     p = tmp_path / "sample_chat.txt"
     p.write_text(SAMPLE_TXT, encoding="utf-8-sig")
     return p

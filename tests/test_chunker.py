@@ -13,7 +13,9 @@ def _make_msg(sender: str, ts_epoch: int, seq: int = 0,
               room: str = "room1", date: str = "2026-05-26",
               text: str = "hello") -> Message:
     """Helper to build a Message with minimal boilerplate."""
-    hm = dt.datetime.fromtimestamp(ts_epoch)
+    # UTC so ts is derived deterministically regardless of the test machine's
+    # local timezone (the chunker only compares ts_epoch; ts is cosmetic here).
+    hm = dt.datetime.fromtimestamp(ts_epoch, tz=dt.timezone.utc)
     return Message(
         msg_id=f"{room}:{date.replace('-', '')}:{seq:05d}",
         room=room,
