@@ -320,24 +320,87 @@ def scroll_list(list_hwnd: int, clicks: int) -> None:
                              win32api.MAKELONG(0, delta & 0xFFFF), lparam)
 
 
-def ocr_image(img, reader=None, upscale: int = 3) -> list[str]:
-    """업스케일+전처리 후 OCR → 줄 목록(위→아래)."""
+def _windows_ocr_lines(pil_img, lang: str = "ko") -> list[str] | None:
+    """Windows 내장 OCR(Windows.Media.Ocr)로 줄 목록 반환. 사용 불가 시 None.
+
+    한국어 정확도가 easyocr보다 높고 빠르며 모델 다운로드가 없다(OCR 언어팩 필요).
+    winrt 비동기 API는 서버의 실행 중 이벤트 루프와 충돌하지 않도록 별도 스레드의
+    새 루프에서 돌린다.
+    """
+    import concurrent.futures
+    import io
+
+    def _run() -> list[str] | None:
+        import asyncio
+
+        async def _go():
+            from winrt.windows.globalization import Language
+            from winrt.windows.graphics.imaging import BitmapDecoder
+            from winrt.windows.media.ocr import OcrEngine
+            from winrt.windows.storage.streams import (
+                DataWriter,
+                InMemoryRandomAccessStream,
+            )
+
+            buf = io.BytesIO()
+            pil_img.save(buf, "PNG")
+            stream = InMemoryRandomAccessStream()
+            writer = DataWriter(stream)
+            writer.write_bytes(buf.getvalue())
+            await writer.store_async()
+            stream.seek(0)
+            decoder = await BitmapDecoder.create_async(stream)
+            bmp = await decoder.get_software_bitmap_async()
+            eng = OcrEngine.try_create_from_language(Language(lang)) or \
+                OcrEngine.try_create_from_user_profile_languages()
+            if eng is None:
+                return None
+            result = await eng.recognize_async(bmp)
+            return [ln.text for ln in result.lines]
+
+        return asyncio.run(_go())
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            return ex.submit(_run).result()
+    except Exception as e:  # winrt 미설치/언어팩 없음/실패 → easyocr로 폴백
+        _log(f"[ocr] Windows OCR 불가({e.__class__.__name__}: {e}), easyocr 폴백")
+        return None
+
+
+def _easyocr_lines(pil_img, reader, upscale: int) -> list[str]:
     from PIL import ImageFilter, ImageOps
 
-    g = img.convert("L")
+    g = pil_img.convert("L")
     big = g.resize((g.width * upscale, g.height * upscale))
     big = ImageOps.autocontrast(big, cutoff=1)
     big = big.filter(ImageFilter.UnsharpMask(radius=1.2, percent=120))
-
     if reader is None:
         import easyocr
         reader = easyocr.Reader(["ko", "en"], gpu=False, verbose=False)
     import numpy as np
     results = reader.readtext(np.array(big), detail=1, paragraph=False,
                               text_threshold=0.6, low_text=0.3, contrast_ths=0.05)
-    # y좌표(상단) 기준 정렬해 위→아래 줄 순서 보장
     results.sort(key=lambda r: min(p[1] for p in r[0]))
     return [r[1] for r in results]
+
+
+def ocr_image(img, reader=None, upscale: int = 3, engine: str = "auto") -> list[str]:
+    """업스케일 후 OCR → 줄 목록(위→아래).
+
+    engine: 'auto'(Windows OCR 우선, 실패 시 easyocr) | 'windows' | 'easyocr'.
+    Windows OCR이 한국어 정확도·속도 모두 우수해 기본 1순위.
+    """
+    from PIL import Image
+
+    if engine in ("auto", "windows"):
+        big = img.resize((img.width * upscale, img.height * upscale), Image.LANCZOS)
+        lines = _windows_ocr_lines(big)
+        if lines is not None:
+            return lines
+        if engine == "windows":
+            return []
+    return _easyocr_lines(img, reader, upscale)
 
 
 def extract_conversation(room_name: str, max_screens: int = 8,

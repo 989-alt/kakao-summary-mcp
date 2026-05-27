@@ -33,10 +33,23 @@ dependencies = [
     "sentence-transformers>=3.0.0",
     "chromadb>=0.5.0",
     "pydantic>=2.0.0",
+    "pywin32>=306 ; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+# 진짜 백그라운드 OCR 추출(method="ocr") 경로용.
+# 1순위: Windows 내장 OCR(winrt, 한국어 정확·고속, 모델 다운로드 없음, OCR 언어팩 필요)
+# 폴백: easyocr(언어팩 없을 때)
+ocr = [
+    "winrt-Windows.Media.Ocr ; sys_platform == 'win32'",
+    "winrt-Windows.Graphics.Imaging ; sys_platform == 'win32'",
+    "winrt-Windows.Storage.Streams ; sys_platform == 'win32'",
+    "winrt-Windows.Globalization ; sys_platform == 'win32'",
+    "winrt-Windows.Foundation ; sys_platform == 'win32'",
+    "winrt-Windows.Foundation.Collections ; sys_platform == 'win32'",
+    "easyocr>=1.7.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/sunhak989/kakao-summary-mcp"
