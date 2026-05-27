@@ -8,9 +8,11 @@ import pytest
 from kakao_summary_mcp.common import (
     always_rooms,
     enabled_rooms,
+    open_key_for,
     resolve_date,
     resolve_range,
     room_entries,
+    room_link_map,
     safe_room_dir,
 )
 
@@ -214,6 +216,28 @@ class TestAlwaysRooms:
 
     def test_empty(self):
         assert always_rooms({}) == []
+
+
+class TestRoomLinkMapAndOpenKey:
+    def test_link_map_only_nonempty(self):
+        cfg = {"rooms": [
+            {"name": "A", "link": "https://open.kakao.com/o/a", "enabled": True},
+            {"name": "B", "link": "", "enabled": True},
+            {"name": "C", "enabled": True},
+        ]}
+        assert room_link_map(cfg) == {"A": "https://open.kakao.com/o/a"}
+
+    def test_open_key_prefers_registered_link(self):
+        lm = {"공부방": "https://open.kakao.com/o/x"}
+        assert open_key_for("공부방", lm) == "https://open.kakao.com/o/x"
+
+    def test_open_key_falls_back_to_name(self):
+        assert open_key_for("부동산방", {}) == "부동산방"
+
+    def test_open_key_url_passthrough(self):
+        # user passed a link directly as the room → use it as-is
+        url = "https://open.kakao.com/o/EXAMPLE"
+        assert open_key_for(url, {}) == url
 
 
 class TestSafeRoomDir:

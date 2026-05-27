@@ -179,5 +179,23 @@ def always_rooms(cfg: dict) -> list[str]:
             if r["enabled"] and r["mode"] == "always"]
 
 
+def room_link_map(cfg: dict) -> dict[str, str]:
+    """방 이름 → 오픈채팅 링크. 링크가 비어있지 않은 방만."""
+    return {r["name"]: r["link"] for r in room_entries(cfg) if r["link"]}
+
+
+def open_key_for(room: str, link_map: dict[str, str]) -> str:
+    """카톡 통합검색(Ctrl+F)에 붙여넣어 방을 열 '키'를 고른다.
+
+    실측: 오픈채팅 '링크'를 검색에 넣으면 그 방이 정확히 열리지만, '방 이름'은
+    동명/부분일치로 진입 실패가 잦다. → 링크가 있으면 링크를 1순위로 쓴다.
+    - room 자체가 URL이면 그대로(사용자가 링크를 직접 지정).
+    - 아니면 등록된 링크가 있으면 링크, 없으면 이름.
+    """
+    if room.startswith("http://") or room.startswith("https://"):
+        return room
+    return link_map.get(room) or room
+
+
 def safe_room_dir(name: str) -> str:
     return re.sub(r'[\\/:*?"<>|]', "_", name).strip()

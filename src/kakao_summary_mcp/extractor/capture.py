@@ -19,11 +19,7 @@ import pyautogui
 import pyperclip
 
 from .shortcut_capture import export_via_shortcut
-from .uia_capture import (
-    export_via_uia,
-    export_via_uia_background,
-    open_room_via_uia,
-)
+from .uia_capture import export_via_uia
 
 pyautogui.FAILSAFE = True
 
@@ -102,16 +98,8 @@ def _export_via_template(out_path: Path, templates_dir: Path,
 # Tier implementations (방 열기 + 내보내기 한 묶음)
 # ---------------------------------------------------------------------------
 
-def _tier_background(room: str, out_path: Path, logs_dir: Path,
-                     save_wait: float) -> Path:
-    """Tier 1: UIA invoke만으로 방 열고 내보내기 (포커스 안 뺏음)."""
-    open_room_via_uia(room)  # best-effort; 이미 열려 있으면 무해
-    time.sleep(0.5)
-    return export_via_uia_background(out_path, logs_dir, save_wait=save_wait)
-
-
 def _tier_foreground_grab(room: str, out_path: Path, logs_dir: Path,
-                          save_wait: float) -> Path:
+                          save_wait: float, open_key: str | None = None) -> Path:
     """Tier 2: 포커스를 잠깐 카톡으로 가져와 추출하고 원래 창으로 복귀."""
     from .window import (
         focus_main_window,
@@ -124,7 +112,8 @@ def _tier_foreground_grab(room: str, out_path: Path, logs_dir: Path,
     try:
         focus_main_window()
         time.sleep(0.3)
-        search_and_open_room(room)
+        # 링크가 있으면 링크로 검색해 방을 연다(이름보다 확실히 열림).
+        search_and_open_room(open_key or room)
         time.sleep(0.8)
         try:
             return export_via_shortcut(out_path, logs_dir, save_wait=save_wait)
@@ -144,7 +133,7 @@ def _tier_template(room: str, out_path: Path, logs_dir: Path,
 
 def export_current_room_chat(room: str, out_path: Path, templates_dir: Path,
                              logs_dir: Path, save_wait: float = 30.0,
-                             *, tiers=None) -> Path:
+                             *, open_key: str | None = None, tiers=None) -> Path:
     """하이브리드 3단계로 방을 열고 .txt를 추출.
 
     Args:
@@ -156,11 +145,12 @@ def export_current_room_chat(room: str, out_path: Path, templates_dir: Path,
     Raises: RuntimeError (모든 tier 실패 시, 각 tier 오류 메시지 합쳐서)
     """
     if tiers is None:
+        # 무손실(export) 경로 tier. UIA invoke는 카톡에 UIA 트리가 없어 제외.
+        # ① 포그라운드-그랩(링크로 검색해 방 열고 Ctrl+S) → ② 템플릿 이미지.
         tiers = [
-            ("UIA(백그라운드)",
-             lambda: _tier_background(room, out_path, logs_dir, save_wait)),
             ("포그라운드-그랩",
-             lambda: _tier_foreground_grab(room, out_path, logs_dir, save_wait)),
+             lambda: _tier_foreground_grab(room, out_path, logs_dir, save_wait,
+                                           open_key=open_key)),
             ("템플릿",
              lambda: _tier_template(room, out_path, logs_dir, save_wait,
                                     templates_dir)),

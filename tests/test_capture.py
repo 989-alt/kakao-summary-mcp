@@ -124,13 +124,12 @@ class TestForegroundGrabRestoresFocus:
         assert ("restore", 12345) in rec
 
 
-def test_default_tiers_are_background_first(tmp_path, monkeypatch):
-    """Default tier order: background → foreground-grab → template."""
-    order = []
+def test_default_tiers_foreground_then_template(tmp_path, monkeypatch):
+    """Export-path default tier order: foreground-grab → template.
 
-    def bg(*a, **k):
-        order.append("bg")
-        raise RuntimeError("bg fail")
+    (UIA-invoke background was removed: KakaoTalk has no UIA tree.)
+    """
+    order = []
 
     def fg(*a, **k):
         order.append("fg")
@@ -140,12 +139,27 @@ def test_default_tiers_are_background_first(tmp_path, monkeypatch):
         order.append("tpl")
         return tmp_path / "out.txt"
 
-    monkeypatch.setattr(capture, "_tier_background", bg)
     monkeypatch.setattr(capture, "_tier_foreground_grab", fg)
     monkeypatch.setattr(capture, "_tier_template", tpl)
 
     result = capture.export_current_room_chat(
         "방", tmp_path / "out.txt", tmp_path, tmp_path,
     )
-    assert order == ["bg", "fg", "tpl"]
+    assert order == ["fg", "tpl"]
     assert result == tmp_path / "out.txt"
+
+
+def test_open_key_passed_to_foreground_grab(tmp_path, monkeypatch):
+    """open_key(링크)가 foreground-grab으로 전달돼 방 열기에 쓰인다."""
+    captured = {}
+
+    def fg(room, out_path, logs_dir, save_wait, open_key=None):
+        captured["open_key"] = open_key
+        return out_path
+
+    monkeypatch.setattr(capture, "_tier_foreground_grab", fg)
+    capture.export_current_room_chat(
+        "공부방", tmp_path / "out.txt", tmp_path, tmp_path,
+        open_key="https://open.kakao.com/o/EXAMPLE",
+    )
+    assert captured["open_key"] == "https://open.kakao.com/o/EXAMPLE"

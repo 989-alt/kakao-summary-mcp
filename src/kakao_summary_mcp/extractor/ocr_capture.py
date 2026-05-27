@@ -243,6 +243,19 @@ def find_chat_window(room_name: str) -> int | None:
     return found[0] if found else None
 
 
+def foreground_chat_window() -> int | None:
+    """현재 포그라운드가 카톡 채팅 창(EVA, 제목≠카카오톡)이면 그 HWND."""
+    import win32gui
+    h = win32gui.GetForegroundWindow()
+    try:
+        if win32gui.GetClassName(h) == CHAT_WINDOW_CLASS and \
+                win32gui.GetWindowText(h) not in ("", "카카오톡"):
+            return h
+    except Exception:
+        pass
+    return None
+
+
 def find_list_control(chat_hwnd: int) -> int | None:
     import win32gui
     kids: list[int] = []
@@ -405,19 +418,31 @@ def ocr_image(img, reader=None, upscale: int = 3, engine: str = "auto") -> list[
 
 def extract_conversation(room_name: str, max_screens: int = 8,
                          reader=None, settle: float = 0.8,
-                         scroll_clicks: int = 3) -> list[str]:
+                         scroll_clicks: int = 3,
+                         open_key: str | None = None) -> list[str]:
     """대화창을 백그라운드로 위로 스크롤하며 캡처·OCR해 시간순 줄 목록 반환.
 
-    포커스를 뺏지 않는다(PrintWindow + posted WM_MOUSEWHEEL). 캡처는 메시지
-    리스트 영역만 crop해 헤더/입력바 잡음을 줄인다. 끝나면 스크롤을 원위치로.
+    캡처·스크롤은 포커스를 뺏지 않는다(PrintWindow + posted WM_MOUSEWHEEL).
+    대상 창이 안 열려 있으면 open_key(링크 우선)로 통합검색해 한 번 연다(이때만 포커스).
+    캡처는 메시지 리스트 영역만 crop해 헤더/입력바 잡음을 줄인다. 끝나면 스크롤 원위치.
 
-    Raises: RuntimeError (창을 못 찾으면). 트레이로 최소화된 방은 창이 없어 실패.
+    Raises: RuntimeError (창을 끝내 못 찾으면).
     """
     hwnd = find_chat_window(room_name)
+    if not hwnd and open_key:
+        # 안 열려 있으면 링크/이름으로 검색해 연다(여는 동안만 포커스 사용).
+        try:
+            from . import window as _w
+            _w.search_and_open_room(open_key)
+            time.sleep(1.0)
+        except Exception as e:
+            _log(f"[ocr] 방 열기 실패: {e}")
+        hwnd = find_chat_window(room_name) or foreground_chat_window()
     if not hwnd:
         raise RuntimeError(
             f"'{room_name}' 채팅 창을 찾지 못했습니다. 그 방을 PC카톡에서 "
-            "별도 창으로 열어두세요(가려져도 OK, 트레이 최소화는 ❌)."
+            "별도 창으로 열어두거나(가려져도 OK, 트레이 ❌), 방의 오픈채팅 "
+            "링크를 등록/지정해 주세요(이름만으론 검색 진입이 안 될 수 있음)."
         )
     lst = find_list_control(hwnd)
     screens: list[list[str]] = []

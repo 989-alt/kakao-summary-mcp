@@ -118,26 +118,31 @@ class SearchMessagesInput(BaseModel):
     )
 
 
-def _extract_room(room: str, raw_path, templates_dir, logs_dir) -> None:
+def _extract_room(room: str, raw_path, templates_dir, logs_dir,
+                  open_key: str | None = None) -> None:
     from .extractor.capture import export_current_room_chat
 
     # 방 열기 + 내보내기는 capture 오케스트레이터가 tier별로 처리.
-    # (백그라운드 tier는 포커스를 뺏지 않고, 포그라운드-그랩 tier만 잠깐 앞으로)
+    # open_key(링크 우선)로 통합검색해 방을 연다 — 이름보다 링크가 확실히 열림.
     _log(f"[{room}] open room & export chat → {raw_path}")
-    export_current_room_chat(room, raw_path, templates_dir, logs_dir)
+    export_current_room_chat(room, raw_path, templates_dir, logs_dir,
+                             open_key=open_key or room)
 
 
-def _extract_room_ocr(room: str, start_date, end_date):
+def _extract_room_ocr(room: str, start_date, end_date,
+                      open_key: str | None = None):
     """진짜 백그라운드 OCR 추출 → 범위 내 Message 리스트.
 
-    PrintWindow+스크롤+OCR(포커스 미탈취). 대상 방 대화창이 열려 있어야 함.
+    PrintWindow+스크롤+OCR(캡처·스크롤은 포커스 미탈취). 대상 방 대화창이
+    안 열려 있으면 open_key(링크 우선)로 통합검색해 한 번 연다(이때만 포커스).
     """
     from .extractor import ocr_capture as oc
 
     # 범위 일수에 비례해 스크롤 화면 수 산정(하루≈8화면, 상한 40)
     span_days = (end_date - start_date).days + 1
     max_screens = min(40, max(6, span_days * 8))
-    lines = oc.extract_conversation(room, max_screens=max_screens)
+    lines = oc.extract_conversation(room, max_screens=max_screens,
+                                    open_key=open_key or room)
     msgs = oc.messages_from_ocr_lines(room, lines, default_date=end_date.isoformat())
     s_iso, e_iso = start_date.isoformat(), end_date.isoformat()
     return [m for m in msgs if s_iso <= m.date <= e_iso]
@@ -227,6 +232,7 @@ async def kakao_sync_chats(params: SyncChatsInput) -> str:
     session_id = f"sess_{dt.datetime.now():%Y%m%d_%H%M%S}"
     model_name = cfg.get("embedding", {}).get("model", "BAAI/bge-m3")
     device = cfg.get("embedding", {}).get("device", "cpu")
+    link_map = common.room_link_map(cfg)
 
     succeeded: list[str] = []
     failed: list[dict] = []
@@ -242,13 +248,16 @@ async def kakao_sync_chats(params: SyncChatsInput) -> str:
         raw_path = paths["raw"] / room_dir / f"{end_date.isoformat()}.txt"
         parsed_path = paths["parsed"] / room_dir / f"{range_tag}.jsonl"
 
+        open_key = common.open_key_for(room, link_map)
         try:
             if params.method == "ocr":
-                msgs = _extract_room_ocr(room, start_date, end_date)
+                msgs = _extract_room_ocr(room, start_date, end_date,
+                                         open_key=open_key)
             else:
                 if not params.skip_extract:
                     raw_path.parent.mkdir(parents=True, exist_ok=True)
-                    _extract_room(room, raw_path, paths["templates"], paths["logs"])
+                    _extract_room(room, raw_path, paths["templates"], paths["logs"],
+                                  open_key=open_key)
                 elif not raw_path.exists():
                     raise FileNotFoundError(
                         f"skip_extract=true인데 raw 파일이 없습니다: {raw_path}"
