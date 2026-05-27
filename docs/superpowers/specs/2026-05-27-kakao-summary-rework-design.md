@@ -120,3 +120,41 @@ parse_file 범위 필터, register_rooms mode/link 병합, always/enabled 선택
 - 기존 rooms.yaml(mode 없음)은 always로 간주.
 - parse_file의 target_date, sync_chats의 date 인자 유지.
 - enabled_rooms 시그니처 유지.
+
+---
+
+## ⚠️ 라이브 검증으로 드러난 설계 수정 (2026-05-27, 실측)
+
+위 §5(하이브리드 UIA invoke 백그라운드)의 **전제가 실측 앞에서 틀렸음**을 기록한다.
+
+**실측 사실 (실제 PC카톡 상대):**
+1. 카톡(EVA 프레임워크) 창은 **UIA 트리가 없다** — 메인/채팅 창의 모든 자식 요소가
+   control_type조차 못 읽힘. → `InvokePattern.invoke()`로 누를 컨트롤이 존재하지 않음.
+   §5의 "Tier 1 UIA invoke 백그라운드"·옛 "Tier 2 UIA by name"은 **원천적으로 불가**.
+2. 백그라운드 프로세스의 `SetForegroundWindow`/`set_focus`는 **Windows 포그라운드
+   잠금으로 막힘** (Chrome/슬라이드쇼가 안 내려감). → "포그라운드-그랩"도 신뢰 불가.
+3. 채팅 창은 방마다 **별도 top-level 창**(class `EVA_Window_Dblclk`, 제목=방 이름).
+   자식: `RICHEDIT50W`(입력창), `EVA_VH_ListControl_Dblclk`(메시지 리스트, WM_GETTEXT 빈값).
+
+**작동하는 것으로 실측된 진짜 백그라운드 경로 (포커스 0 탈취):**
+- `PrintWindow(hwnd, PW_RENDERFULLCONTENT=2)` — 가려진 창도 픽셀 캡처 ✅
+- `PostMessage(list_hwnd, WM_MOUSEWHEEL, …)` — 포커스 없이 대화 스크롤 ✅
+- 업스케일(3x)+autocontrast+UnsharpMask 후 easyocr(ko,en) — 요약 가능한 텍스트 ✅
+- 메시지 리스트 영역으로 crop → 헤더/입력바 잡음 제거 ✅
+- → 신규 모듈 **`extractor/ocr_capture.py`** (find_chat_window/capture_messages/
+  scroll_list/ocr_image/stitch_scrolls(fuzzy)/split_by_date/extract_conversation).
+  순수 로직(stitch·dedupe·날짜분할) 단위테스트 20개. 실 카톡 라이브 end-to-end 확인
+  (슬라이드쇼 실행 중에도 포커스 안 뺏고 추출 성공).
+
+**한계:** OCR이라 손실 — 고유명사·링크 일부 오인식, 화면에 안 보이는 메시지는 못 잡음
+(스크롤로 보강). 원문 정확 일치 검색엔 부적합.
+
+**무손실 후보(미검증, 슬라이드쇼 종료 후 테스트 예정):** `PostMessage`로 채팅 창에
+Ctrl+S를 포스트 → 네이티브 '다른 이름으로 저장' 다이얼로그(이건 UIA 트리 있음)를
+핸들로 제어해 .txt 저장. 되면 **무손실 + 백그라운드**. 이게 최선의 1순위.
+
+**기존 capture.py 상태:** Tier1(UIA invoke)·Tier2(포그라운드-그랩)는 위 1·2로
+사실상 동작 불가. 오케스트레이션 골격·날짜범위·방모드·링크 등록은 유효하며,
+추출 실체는 `ocr_capture`(현재) 및 PostMessage-Ctrl+S(예정)로 대체/보강한다.
+서버(`kakao_sync_chats`)에 OCR 경로를 연결하려면 OCR 줄→Message 객체 브리지
+(날짜=구분선, 발신자/시각=베스트에포트)가 추가로 필요 — 다음 단계.

@@ -1,0 +1,305 @@
+"""True-background extraction via PrintWindow + posted scroll + OCR.
+
+PC카톡(EVA 프레임워크)은 UIA 트리가 없고 포그라운드 강제 전환도 OS가 막는다.
+하지만 다음 셋은 **포커스를 뺏지 않고**(가려진 창에서도) 동작함이 실측됨:
+
+1. `PrintWindow(hwnd, PW_RENDERFULLCONTENT=2)` — 가려진 창 픽셀 캡처.
+2. `PostMessage(list_hwnd, WM_MOUSEWHEEL, ...)` — 포커스 없이 대화 스크롤.
+3. 업스케일 + 전처리 후 OCR — 요약 가능한 한국어 텍스트 확보.
+
+이 모듈은 위 셋을 묶어, 대화창을 백그라운드로 스크롤하며 화면을 캡처·OCR하고
+줄 단위로 중복 제거(stitch)해 하루치 텍스트를 만든다.
+
+Win32/OCR 의존부는 함수로 격리하고, 순수 로직(stitch/날짜 파싱/줄 정리)은
+인자만으로 동작해 단위테스트가 가능하다.
+"""
+from __future__ import annotations
+
+import difflib
+import re
+import sys
+import time
+from dataclasses import dataclass, field
+
+CHAT_WINDOW_CLASS = "EVA_Window_Dblclk"
+LIST_CONTROL_CLASS = "EVA_VH_ListControl_Dblclk"
+PW_RENDERFULLCONTENT = 2
+WM_MOUSEWHEEL = 0x020A
+
+DATE_SEP_RE = re.compile(r"(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일")
+# OCR 잡음/UI 라벨로 흔히 잡히는 줄 (메시지 아님)
+_NOISE_LINES = (
+    "메시지 입력", "시지 입력", "전송", "전손", "Q 0 > =",
+)
+
+
+def _log(msg: str) -> None:
+    print(msg, file=sys.stderr, flush=True)
+
+
+# ---------------------------------------------------------------------------
+# 순수 로직 (단위테스트 대상) — Win32/OCR 미사용
+# ---------------------------------------------------------------------------
+
+def clean_lines(lines: list[str]) -> list[str]:
+    """OCR 줄 목록에서 공백·UI 잡음 줄 제거, strip."""
+    out: list[str] = []
+    for ln in lines:
+        s = ln.strip()
+        if not s:
+            continue
+        if any(noise in s for noise in _NOISE_LINES):
+            continue
+        out.append(s)
+    return out
+
+
+def _line_eq(a: str, b: str, fuzzy: float) -> bool:
+    """fuzzy<=0이면 정확 일치, 아니면 유사도 비교.
+
+    규칙:
+    - 짧은 줄(<=3)은 정확 일치만.
+    - 숫자는 유의미: 두 줄의 숫자 시퀀스가 다르면(예: 타임스탬프 11:05 vs 11:16)
+      유사해도 다른 줄로 본다. → 시간·인원수 등 구분 보존.
+    """
+    if a == b:
+        return True
+    if fuzzy <= 0 or min(len(a), len(b)) <= 3:
+        return False
+    if re.sub(r"\D", "", a) != re.sub(r"\D", "", b):
+        return False
+    return difflib.SequenceMatcher(None, a, b).ratio() >= fuzzy
+
+
+def merge_overlapping(upper: list[str], lower: list[str],
+                      min_overlap: int = 1, fuzzy: float = 0.0) -> list[str]:
+    """위쪽(older) 화면 줄과 아래쪽(newer) 화면 줄을, 겹치는 구간을 한 번만 남기고 결합.
+
+    upper의 접미부와 lower의 접두부가 가장 길게 (정확/유사) 일치하는 지점을 찾아 잇는다.
+    OCR은 캡처마다 글자가 미세하게 달라지므로 fuzzy>0이면 유사도로 겹침을 판정한다.
+    """
+    if not upper:
+        return list(lower)
+    if not lower:
+        return list(upper)
+    max_k = min(len(upper), len(lower))
+    best = 0
+    for k in range(max_k, min_overlap - 1, -1):
+        if all(_line_eq(upper[-k + i], lower[i], fuzzy) for i in range(k)):
+            best = k
+            break
+    return list(upper) + list(lower[best:])
+
+
+def dedupe_consecutive(lines: list[str], fuzzy: float = 0.85) -> list[str]:
+    """인접한 (거의) 동일 줄을 한 번만 남김. OCR 잔여 중복 정리."""
+    out: list[str] = []
+    for ln in lines:
+        if out and _line_eq(out[-1], ln, fuzzy):
+            continue
+        out.append(ln)
+    return out
+
+
+def stitch_scrolls(screens_top_to_bottom: list[list[str]],
+                   fuzzy: float = 0.8) -> list[str]:
+    """위로 스크롤하며 캡처한 화면들을 하나의 시간순(old→new) 줄 목록으로 결합.
+
+    입력 순서: screens[0]가 가장 최근(스크롤 전, 화면 맨 아래),
+    screens[-1]가 가장 오래된(가장 많이 위로 스크롤). 각 화면은 위→아래 줄.
+
+    결과: old→new 순서의 (fuzzy) 중복 제거된 줄 목록.
+    """
+    # 오래된 화면부터(역순) 누적: 누적(older 윗부분) 아래에 newer 화면을 이어붙임.
+    acc: list[str] = []
+    for screen in reversed(screens_top_to_bottom):
+        cleaned = clean_lines(screen)
+        acc = merge_overlapping(acc, cleaned, fuzzy=fuzzy)
+    return dedupe_consecutive(acc, fuzzy=max(fuzzy, 0.85))
+
+
+@dataclass
+class OcrDay:
+    date: str  # YYYY-MM-DD
+    lines: list[str] = field(default_factory=list)
+
+
+def split_by_date(lines: list[str], default_date: str | None = None) -> list[OcrDay]:
+    """줄 목록을 날짜 구분선("YYYY년 M월 D일") 기준으로 일자별로 분할."""
+    days: list[OcrDay] = []
+    cur: OcrDay | None = None
+    if default_date:
+        cur = OcrDay(default_date)
+        days.append(cur)
+    for ln in lines:
+        m = DATE_SEP_RE.search(ln)
+        if m and len(ln) <= 25:  # 날짜 구분선은 짧음 (메시지 본문 내 날짜 언급과 구분)
+            iso = f"{int(m[1]):04d}-{int(m[2]):02d}-{int(m[3]):02d}"
+            cur = OcrDay(iso)
+            days.append(cur)
+            continue
+        if cur is None:
+            cur = OcrDay(default_date or "unknown")
+            days.append(cur)
+        cur.lines.append(ln)
+    if cur is not None and cur not in days:
+        days.append(cur)
+    # 같은 날짜가 여러 번(기본값 + 실제 구분선, OCR 중복 등) 나오면 한 버킷으로 병합
+    merged: dict[str, OcrDay] = {}
+    for d in days:
+        if not d.lines:
+            continue
+        if d.date in merged:
+            merged[d.date].lines.extend(d.lines)
+        else:
+            merged[d.date] = OcrDay(d.date, list(d.lines))
+    return list(merged.values())
+
+
+def filter_days_in_range(days: list[OcrDay], start_iso: str, end_iso: str) -> list[OcrDay]:
+    return [d for d in days if start_iso <= d.date <= end_iso]
+
+
+# ---------------------------------------------------------------------------
+# Win32 캡처/스크롤 (실 환경 전용) — import 시점에 pywin32 없으면 지연 에러
+# ---------------------------------------------------------------------------
+
+def find_chat_window(room_name: str) -> int | None:
+    """제목이 room_name과 일치하는 카톡 채팅 창(top-level) HWND 반환."""
+    import win32gui
+    found: list[int] = []
+
+    def cb(h, _):
+        if win32gui.GetClassName(h) == CHAT_WINDOW_CLASS and \
+                win32gui.GetWindowText(h) == room_name:
+            found.append(h)
+        return True
+
+    win32gui.EnumWindows(cb, None)
+    return found[0] if found else None
+
+
+def find_list_control(chat_hwnd: int) -> int | None:
+    import win32gui
+    kids: list[int] = []
+    win32gui.EnumChildWindows(chat_hwnd, lambda h, _: kids.append(h) or True, None)
+    for h in kids:
+        if win32gui.GetClassName(h) == LIST_CONTROL_CLASS:
+            return h
+    return None
+
+
+def capture_window(hwnd: int):
+    """PrintWindow로 가려진 창도 캡처 → PIL.Image (RGB)."""
+    import win32gui
+    import win32ui
+    from ctypes import windll
+    from PIL import Image
+
+    l, t, r, b = win32gui.GetWindowRect(hwnd)
+    w, h = r - l, b - t
+    dc = win32gui.GetWindowDC(hwnd)
+    mfc = win32ui.CreateDCFromHandle(dc)
+    sdc = mfc.CreateCompatibleDC()
+    bmp = win32ui.CreateBitmap()
+    bmp.CreateCompatibleBitmap(mfc, w, h)
+    sdc.SelectObject(bmp)
+    windll.user32.PrintWindow(hwnd, sdc.GetSafeHdc(), PW_RENDERFULLCONTENT)
+    info = bmp.GetInfo()
+    bits = bmp.GetBitmapBits(True)
+    img = Image.frombuffer("RGB", (info["bmWidth"], info["bmHeight"]),
+                           bits, "raw", "BGRX", 0, 1)
+    win32gui.DeleteObject(bmp.GetHandle())
+    sdc.DeleteDC()
+    mfc.DeleteDC()
+    win32gui.ReleaseDC(hwnd, dc)
+    return img
+
+
+def list_region_box(chat_hwnd: int, list_hwnd: int) -> tuple[int, int, int, int]:
+    """채팅 창 캡처에서 메시지 리스트 영역만 잘라낼 crop box(창 기준 좌표)."""
+    import win32gui
+    wl, wt, wr, wb = win32gui.GetWindowRect(chat_hwnd)
+    ll, lt, lr, lb = win32gui.GetWindowRect(list_hwnd)
+    return (ll - wl, lt - wt, lr - wl, lb - wt)
+
+
+def capture_messages(chat_hwnd: int, list_hwnd: int | None = None):
+    """채팅 창을 캡처하되 메시지 리스트 영역만 crop → PIL.Image.
+
+    상단 헤더(방 이름·인원·☰)와 하단 입력바를 제외해 OCR 잡음을 줄인다.
+    list_hwnd 미지정 시 전체 창 반환.
+    """
+    img = capture_window(chat_hwnd)
+    if list_hwnd:
+        box = list_region_box(chat_hwnd, list_hwnd)
+        # 음수/역전 방어
+        l, t, r, b = box
+        l, t = max(0, l), max(0, t)
+        if r > l and b > t:
+            img = img.crop((l, t, min(r, img.width), min(b, img.height)))
+    return img
+
+
+def scroll_list(list_hwnd: int, clicks: int) -> None:
+    """포커스 없이 대화 리스트 스크롤. clicks>0=위(older), <0=아래(newer)."""
+    import win32api
+    import win32con
+    import win32gui
+
+    l, t, r, b = win32gui.GetWindowRect(list_hwnd)
+    cx, cy = (l + r) // 2, (t + b) // 2
+    lparam = win32api.MAKELONG(cx, cy)
+    delta = 120 if clicks > 0 else -120
+    for _ in range(abs(clicks)):
+        win32gui.PostMessage(list_hwnd, win32con.WM_MOUSEWHEEL,
+                             win32api.MAKELONG(0, delta & 0xFFFF), lparam)
+
+
+def ocr_image(img, reader=None, upscale: int = 3) -> list[str]:
+    """업스케일+전처리 후 OCR → 줄 목록(위→아래)."""
+    from PIL import ImageFilter, ImageOps
+
+    g = img.convert("L")
+    big = g.resize((g.width * upscale, g.height * upscale))
+    big = ImageOps.autocontrast(big, cutoff=1)
+    big = big.filter(ImageFilter.UnsharpMask(radius=1.2, percent=120))
+
+    if reader is None:
+        import easyocr
+        reader = easyocr.Reader(["ko", "en"], gpu=False, verbose=False)
+    import numpy as np
+    results = reader.readtext(np.array(big), detail=1, paragraph=False,
+                              text_threshold=0.6, low_text=0.3, contrast_ths=0.05)
+    # y좌표(상단) 기준 정렬해 위→아래 줄 순서 보장
+    results.sort(key=lambda r: min(p[1] for p in r[0]))
+    return [r[1] for r in results]
+
+
+def extract_conversation(room_name: str, max_screens: int = 8,
+                         reader=None, settle: float = 0.8,
+                         scroll_clicks: int = 3) -> list[str]:
+    """대화창을 백그라운드로 위로 스크롤하며 캡처·OCR해 시간순 줄 목록 반환.
+
+    포커스를 뺏지 않는다(PrintWindow + posted WM_MOUSEWHEEL). 캡처는 메시지
+    리스트 영역만 crop해 헤더/입력바 잡음을 줄인다. 끝나면 스크롤을 원위치로.
+
+    Raises: RuntimeError (창을 못 찾으면). 트레이로 최소화된 방은 창이 없어 실패.
+    """
+    hwnd = find_chat_window(room_name)
+    if not hwnd:
+        raise RuntimeError(
+            f"'{room_name}' 채팅 창을 찾지 못했습니다. 그 방을 PC카톡에서 "
+            "별도 창으로 열어두세요(가려져도 OK, 트레이 최소화는 ❌)."
+        )
+    lst = find_list_control(hwnd)
+    screens: list[list[str]] = []
+    for i in range(max_screens):
+        img = capture_messages(hwnd, lst)
+        screens.append(ocr_image(img, reader=reader))
+        if i < max_screens - 1 and lst:
+            scroll_list(lst, scroll_clicks)
+            time.sleep(settle)
+    if lst:  # 스크롤 원위치(아래로 충분히)
+        scroll_list(lst, -(max_screens * scroll_clicks + 4))
+    return stitch_scrolls(screens)
