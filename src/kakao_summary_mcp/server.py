@@ -15,8 +15,6 @@ from __future__ import annotations
 import datetime as dt
 import json
 import sys
-import time
-from enum import Enum
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
@@ -38,25 +36,29 @@ def _log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
 
-class DateOption(str, Enum):
-    today = "today"
-    yesterday = "yesterday"
-
-
 class SyncChatsInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
-    date: str = Field(
-        default="today",
+    date: Optional[str] = Field(
+        default=None,
         description=(
-            "수집 대상 날짜. 'today', 'yesterday', 또는 'YYYY-MM-DD' 형식. 기본 'today'."
+            "단일 날짜. 'today', 'yesterday'/'어제', 또는 'YYYY-MM-DD'. "
+            "range가 주어지면 무시됨. date·range 둘 다 없으면 기본 '전일(어제)'."
+        ),
+    )
+    range: Optional[str] = Field(
+        default=None,
+        description=(
+            "기간 스펙. 'yesterday', 'YYYY-MM-DD~YYYY-MM-DD', '지난 3일', "
+            "'last 5 days' 등. 최대 7일이며 초과 시 가장 최근 7일로 클램프된다. "
+            "date보다 우선."
         ),
     )
     rooms: Optional[list[str]] = Field(
         default=None,
         description=(
             "대상 오픈채팅방 이름 리스트 (PC카톡 표시명 그대로). "
-            "생략 시 rooms.yaml의 enabled=true 방을 사용. 복수 지정 가능."
+            "생략 시 mode=always 인 방(enabled)을 사용. 복수 지정 가능."
         ),
         max_length=20,
     )
@@ -110,18 +112,11 @@ class SearchMessagesInput(BaseModel):
 
 def _extract_room(room: str, raw_path, templates_dir, logs_dir) -> None:
     from .extractor.capture import export_current_room_chat
-    from .extractor.window import focus_main_window, search_and_open_room
 
-    _log(f"[{room}] focus KakaoTalk window")
-    focus_main_window()
-    time.sleep(0.3)
-
-    _log(f"[{room}] search & open room")
-    search_and_open_room(room)
-    time.sleep(0.8)
-
-    _log(f"[{room}] export chat → {raw_path}")
-    export_current_room_chat(raw_path, templates_dir, logs_dir)
+    # 방 열기 + 내보내기는 capture 오케스트레이터가 tier별로 처리.
+    # (백그라운드 tier는 포커스를 뺏지 않고, 포그라운드-그랩 tier만 잠깐 앞으로)
+    _log(f"[{room}] open room & export chat → {raw_path}")
+    export_current_room_chat(room, raw_path, templates_dir, logs_dir)
 
 
 @mcp.tool(
@@ -187,16 +182,21 @@ async def kakao_sync_chats(params: SyncChatsInput) -> str:
     cfg = common.load_config()
     paths = common.data_paths(cfg)
     try:
-        target_date = common.resolve_date(params.date)
+        start_date, end_date, clamped = common.resolve_range(
+            params.range or params.date
+        )
     except ValueError as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
-    rooms = common.enabled_rooms(cfg, params.rooms)
+    if params.rooms:
+        rooms = [r.strip() for r in params.rooms if r.strip()]
+    else:
+        rooms = common.always_rooms(cfg)
     if not rooms:
         return json.dumps({
             "error": (
                 "대상 방이 없습니다. ~/.kakao-summary-mcp/rooms.yaml 에서 "
-                "enabled=true로 설정하거나 'rooms' 파라미터로 지정하세요."
+                "mode=always 로 등록하거나 'rooms' 파라미터로 지정하세요."
             ),
         }, ensure_ascii=False)
 
@@ -208,10 +208,15 @@ async def kakao_sync_chats(params: SyncChatsInput) -> str:
     failed: list[dict] = []
     all_turns: list[dict] = []
 
+    range_tag = (
+        end_date.isoformat() if start_date == end_date
+        else f"{start_date.isoformat()}_{end_date.isoformat()}"
+    )
     for room in rooms:
         room_dir = common.safe_room_dir(room)
-        raw_path = paths["raw"] / room_dir / f"{target_date.isoformat()}.txt"
-        parsed_path = paths["parsed"] / room_dir / f"{target_date.isoformat()}.jsonl"
+        # raw 내보내기는 대화 전체이므로 anchor(end_date)로 캐싱.
+        raw_path = paths["raw"] / room_dir / f"{end_date.isoformat()}.txt"
+        parsed_path = paths["parsed"] / room_dir / f"{range_tag}.jsonl"
 
         try:
             if not params.skip_extract:
@@ -222,7 +227,8 @@ async def kakao_sync_chats(params: SyncChatsInput) -> str:
                     f"skip_extract=true인데 raw 파일이 없습니다: {raw_path}"
                 )
 
-            msgs = parse_file(raw_path, room, target_date)
+            msgs = parse_file(raw_path, room,
+                              start_date=start_date, end_date=end_date)
             if not msgs:
                 _log(f"[{room}] 해당 날짜에 메시지 없음")
                 succeeded.append(room)
@@ -259,21 +265,32 @@ async def kakao_sync_chats(params: SyncChatsInput) -> str:
     session = {
         "session_id": session_id,
         "created_at": dt.datetime.now().isoformat(timespec="seconds"),
-        "date": target_date.isoformat(),
+        "date_start": start_date.isoformat(),
+        "date_end": end_date.isoformat(),
         "rooms": succeeded,
         "topics": {},
         "total_turns": total,
     }
     save_session(paths["sessions"] / f"{session_id}.json", session)
 
+    notes = []
+    if clamped:
+        notes.append(
+            f"요청 기간이 7일을 초과해 가장 최근 7일({start_date.isoformat()}"
+            f"~{end_date.isoformat()})로 제한했습니다."
+        )
+
     return json.dumps({
         "session_id": session_id,
-        "date": target_date.isoformat(),
+        "date_start": start_date.isoformat(),
+        "date_end": end_date.isoformat(),
+        "clamped": clamped,
         "rooms_attempted": rooms,
         "rooms_succeeded": succeeded,
         "rooms_failed": failed,
         "total_turns": total,
         "truncated": truncated,
+        "notes": notes,
         "turns": inline_turns,
     }, ensure_ascii=False)
 
@@ -408,6 +425,20 @@ class RegisterRoomsInput(BaseModel):
         default=False,
         description="true면 기존 enabled 방을 모두 비활성화 후 새 리스트만 등록.",
     )
+    modes: Optional[dict[str, str]] = Field(
+        default=None,
+        description=(
+            "방 이름 → 'always'|'optional' 매핑. 'always'면 사용자가 '요약'이라고만 "
+            "해도 자동 포함, 'optional'이면 지목할 때만. 생략된 방은 'always' 기본."
+        ),
+    )
+    links: Optional[dict[str, str]] = Field(
+        default=None,
+        description=(
+            "방 이름 → 오픈채팅 링크(예: https://open.kakao.com/o/...) 매핑. "
+            "식별·메모용이며 추출에는 사용하지 않음."
+        ),
+    )
 
 
 @mcp.tool(
@@ -448,18 +479,32 @@ async def kakao_setup_check(params: SetupCheckInput) -> str:
     cfg_path = common.config_path()
     rooms_yaml_exists = cfg_path.exists()
     enabled = []
+    always = []
+    optional = []
     if rooms_yaml_exists:
         try:
             cfg = common.load_config()
             enabled = common.enabled_rooms(cfg)
+            always = common.always_rooms(cfg)
+            optional = [r["name"] for r in common.room_entries(cfg)
+                        if r["enabled"] and r["mode"] == "optional"]
         except Exception:
             enabled = []
 
     kakao_running = False
+    kakao_window_minimized = False
     try:
         from pywinauto import findwindows
         handles = findwindows.find_windows(title_re=r"^카카오톡|^KakaoTalk")
         kakao_running = bool(handles)
+        if kakao_running:
+            try:
+                import win32gui  # type: ignore
+                kakao_window_minimized = any(
+                    win32gui.IsIconic(h) for h in handles
+                )
+            except Exception:
+                kakao_window_minimized = False
     except Exception:
         pass
 
@@ -492,6 +537,11 @@ async def kakao_setup_check(params: SetupCheckInput) -> str:
         )
     if not kakao_running:
         next_steps.append("PC카톡을 실행하고 로그인하세요.")
+    elif kakao_window_minimized:
+        next_steps.append(
+            "준백그라운드 추출은 카톡 창이 열려 있어야 합니다(트레이/최소화 ❌). "
+            "카톡 창을 띄워두세요. 다른 창에 가려져 있어도 됩니다."
+        )
 
     ready = (not missing) and bool(enabled) and kakao_running
 
@@ -500,7 +550,10 @@ async def kakao_setup_check(params: SetupCheckInput) -> str:
         "app_home": str(paths["home"]),
         "rooms_yaml_exists": rooms_yaml_exists,
         "enabled_rooms": enabled,
+        "always_rooms": always,
+        "optional_rooms": optional,
         "kakao_running": kakao_running,
+        "kakao_window_minimized": kakao_window_minimized,
         "uia_connectable": uia_ok,
         "missing_deps": missing,
         "next_steps": next_steps,
@@ -526,9 +579,12 @@ async def kakao_register_rooms(params: RegisterRoomsInput) -> str:
     Args:
         params.rooms (list[str]): PC카톡 표시명 그대로 방 이름들
         params.replace (bool): true면 기존 enabled 항목을 비활성화 후 새 리스트로
+        params.modes (dict|None): 방 이름 → 'always'|'optional'
+        params.links (dict|None): 방 이름 → 오픈채팅 링크(식별·메모용)
 
     Returns:
-        str: JSON {"enabled_rooms": [...], "config_path": "..."}
+        str: JSON {"enabled_rooms": [...], "always_rooms": [...],
+                   "optional_rooms": [...], "config_path": "..."}
     """
     import json as _json
     import yaml as _yaml
@@ -541,23 +597,39 @@ async def kakao_register_rooms(params: RegisterRoomsInput) -> str:
     existing = cfg.get("rooms", []) or []
     by_name = {r["name"]: r for r in existing if isinstance(r, dict) and "name" in r}
 
+    modes = params.modes or {}
+    links = params.links or {}
+
+    def _norm_mode(value: str | None, fallback: str = "always") -> str:
+        return value if value in common.VALID_MODES else fallback
+
     if params.replace:
         for r in by_name.values():
             r["enabled"] = False
 
     for name in params.rooms:
-        if name in by_name:
-            by_name[name]["enabled"] = True
-        else:
-            by_name[name] = {"name": name, "enabled": True}
+        entry = by_name.get(name, {"name": name})
+        entry["enabled"] = True
+        # mode: 명시값 우선 → 기존값 유지 → 'always' 기본
+        entry["mode"] = _norm_mode(modes.get(name), _norm_mode(entry.get("mode")))
+        if name in links:
+            entry["link"] = links[name]
+        elif "link" not in entry:
+            entry["link"] = ""
+        by_name[name] = entry
 
     cfg["rooms"] = list(by_name.values())
     with open(cfg_path, "w", encoding="utf-8") as f:
         _yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
 
     enabled = [r["name"] for r in cfg["rooms"] if r.get("enabled")]
+    always = common.always_rooms(cfg)
+    optional = [r["name"] for r in common.room_entries(cfg)
+                if r["enabled"] and r["mode"] == "optional"]
     return _json.dumps({
         "enabled_rooms": enabled,
+        "always_rooms": always,
+        "optional_rooms": optional,
         "config_path": str(cfg_path),
     }, ensure_ascii=False)
 

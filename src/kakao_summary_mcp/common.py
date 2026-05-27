@@ -70,10 +70,113 @@ def resolve_date(s: str | None) -> dt.date:
     raise ValueError(f"날짜를 해석할 수 없습니다: {s!r}")
 
 
+MAX_RANGE_DAYS = 7
+
+_RANGE_SEP_RE = re.compile(r"\s*(?:~|–|—|\.\.\.?|\bto\b)\s*")
+_LAST_N_RE = re.compile(r"^(?:지난|최근|last)\s*(\d+)\s*(?:일|days?)?$", re.IGNORECASE)
+
+
+def resolve_range(
+    spec: str | tuple[str | None, str | None] | None,
+    *,
+    today: dt.date | None = None,
+    max_days: int = MAX_RANGE_DAYS,
+) -> tuple[dt.date, dt.date, bool]:
+    """범위 스펙을 (start, end, clamped)로 정규화.
+
+    - None/""/"yesterday"/"어제" → 전일(어제) 단일.
+    - "today"/"오늘" → 오늘 단일.
+    - "YYYY-MM-DD" → 단일일.
+    - "YYYY-MM-DD~YYYY-MM-DD" (또는 ..,–,—,to 구분) → 범위.
+    - "지난 N일"/"최근 N일"/"last N days" → (오늘-(N-1), 오늘).
+    - (start, end) 튜플 → 각 항목을 resolve_date로 해석(None은 today=어제 규칙 미적용,
+      start None이면 end와 동일, end None이면 start와 동일).
+
+    start>end면 swap. 일수가 max_days 초과면 end 기준 최근 max_days로 클램프하고
+    clamped=True 반환.
+    """
+    base = today or dt.date.today()
+    yesterday = base - dt.timedelta(days=1)
+
+    if isinstance(spec, tuple):
+        s_raw, e_raw = spec
+        if s_raw is None and e_raw is None:
+            start = end = yesterday
+        else:
+            start = resolve_date(s_raw) if s_raw else None
+            end = resolve_date(e_raw) if e_raw else None
+            if start is None:
+                start = end
+            if end is None:
+                end = start
+    elif spec is None or (isinstance(spec, str) and not spec.strip()):
+        start = end = yesterday
+    else:
+        text = spec.strip()
+        mlast = _LAST_N_RE.match(text)
+        if text in ("yesterday", "어제"):
+            start = end = yesterday
+        elif text in ("today", "오늘"):
+            start = end = base
+        elif mlast:
+            n = max(1, int(mlast.group(1)))
+            end = base
+            start = base - dt.timedelta(days=n - 1)
+        else:
+            parts = _RANGE_SEP_RE.split(text, maxsplit=1)
+            if len(parts) == 2:
+                start = resolve_date(parts[0])
+                end = resolve_date(parts[1])
+            else:
+                start = end = resolve_date(text)
+
+    if start > end:
+        start, end = end, start
+
+    clamped = False
+    span = (end - start).days + 1
+    if span > max_days:
+        start = end - dt.timedelta(days=max_days - 1)
+        clamped = True
+
+    return start, end, clamped
+
+
+VALID_MODES = ("always", "optional")
+
+
+def room_entries(cfg: dict) -> list[dict]:
+    """rooms.yaml 항목을 정규화된 dict 리스트로.
+
+    각 dict: {name, mode(always|optional), link(str), enabled(bool)}.
+    mode 누락·비정상 값은 'always'로 간주(하위호환).
+    """
+    out: list[dict] = []
+    for r in cfg.get("rooms", []) or []:
+        if not isinstance(r, dict) or not r.get("name"):
+            continue
+        mode = r.get("mode")
+        if mode not in VALID_MODES:
+            mode = "always"
+        out.append({
+            "name": r["name"],
+            "mode": mode,
+            "link": r.get("link", "") or "",
+            "enabled": bool(r.get("enabled")),
+        })
+    return out
+
+
 def enabled_rooms(cfg: dict, override: list[str] | None = None) -> list[str]:
     if override:
         return [r.strip() for r in override if r.strip()]
-    return [r["name"] for r in cfg.get("rooms", []) if r.get("enabled")]
+    return [r["name"] for r in room_entries(cfg) if r["enabled"]]
+
+
+def always_rooms(cfg: dict) -> list[str]:
+    """enabled 且 mode==always 인 방 이름. "요약"이라고만 했을 때의 기본 대상."""
+    return [r["name"] for r in room_entries(cfg)
+            if r["enabled"] and r["mode"] == "always"]
 
 
 def safe_room_dir(name: str) -> str:

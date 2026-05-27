@@ -46,6 +46,26 @@ def focus_main_window() -> None:
     time.sleep(0.4)
 
 
+def remember_foreground() -> int | None:
+    """현재 포그라운드 창 HWND를 기억(포그라운드-그랩 전에 호출)."""
+    try:
+        import win32gui  # type: ignore
+        return win32gui.GetForegroundWindow()
+    except Exception:
+        return None
+
+
+def restore_foreground(hwnd: int | None) -> None:
+    """remember_foreground()로 저장한 창으로 포커스 복귀."""
+    if not hwnd:
+        return
+    try:
+        import win32gui  # type: ignore
+        win32gui.SetForegroundWindow(hwnd)
+    except Exception:
+        pass
+
+
 def search_and_open_room(room_name: str) -> None:
     """Ctrl+F로 통합 검색 열고 방 이름 입력 후 Enter."""
     focus_main_window()

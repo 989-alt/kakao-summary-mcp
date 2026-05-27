@@ -5,7 +5,17 @@ import datetime as dt
 
 import pytest
 
-from kakao_summary_mcp.common import enabled_rooms, resolve_date, safe_room_dir
+from kakao_summary_mcp.common import (
+    always_rooms,
+    enabled_rooms,
+    resolve_date,
+    resolve_range,
+    room_entries,
+    safe_room_dir,
+)
+
+FIXED = dt.date(2026, 5, 27)
+YEST = dt.date(2026, 5, 26)
 
 
 class TestResolveDate:
@@ -91,6 +101,119 @@ class TestEnabledRooms:
         }
         result = enabled_rooms(cfg, override=["custom_room"])
         assert result == ["custom_room"]
+
+
+class TestResolveRange:
+    def test_default_is_yesterday(self):
+        assert resolve_range(None, today=FIXED) == (YEST, YEST, False)
+
+    def test_empty_string_is_yesterday(self):
+        assert resolve_range("  ", today=FIXED) == (YEST, YEST, False)
+
+    def test_yesterday_keyword(self):
+        assert resolve_range("yesterday", today=FIXED) == (YEST, YEST, False)
+        assert resolve_range("어제", today=FIXED) == (YEST, YEST, False)
+
+    def test_today_keyword(self):
+        assert resolve_range("today", today=FIXED) == (FIXED, FIXED, False)
+        assert resolve_range("오늘", today=FIXED) == (FIXED, FIXED, False)
+
+    def test_single_iso_date(self):
+        assert resolve_range("2026-05-20", today=FIXED) == (
+            dt.date(2026, 5, 20), dt.date(2026, 5, 20), False)
+
+    def test_explicit_range_tilde(self):
+        assert resolve_range("2026-05-21~2026-05-25", today=FIXED) == (
+            dt.date(2026, 5, 21), dt.date(2026, 5, 25), False)
+
+    def test_explicit_range_dotdot(self):
+        assert resolve_range("2026-05-21..2026-05-23", today=FIXED) == (
+            dt.date(2026, 5, 21), dt.date(2026, 5, 23), False)
+
+    def test_explicit_range_to(self):
+        assert resolve_range("2026-05-21 to 2026-05-22", today=FIXED) == (
+            dt.date(2026, 5, 21), dt.date(2026, 5, 22), False)
+
+    def test_range_swaps_when_reversed(self):
+        assert resolve_range("2026-05-25~2026-05-21", today=FIXED) == (
+            dt.date(2026, 5, 21), dt.date(2026, 5, 25), False)
+
+    def test_last_n_days(self):
+        # 지난 3일 = 오늘 포함 최근 3일 → 5/25~5/27
+        assert resolve_range("지난 3일", today=FIXED) == (
+            dt.date(2026, 5, 25), FIXED, False)
+
+    def test_last_n_days_english(self):
+        assert resolve_range("last 2 days", today=FIXED) == (
+            dt.date(2026, 5, 26), FIXED, False)
+
+    def test_seven_day_range_not_clamped(self):
+        # 5/21~5/27 = exactly 7 days
+        s, e, clamped = resolve_range("2026-05-21~2026-05-27", today=FIXED)
+        assert (s, e) == (dt.date(2026, 5, 21), FIXED)
+        assert clamped is False
+
+    def test_over_seven_days_clamped_to_recent_seven(self):
+        # 5/1~5/27 spans 27 days → clamp to most-recent 7 ending 5/27 → 5/21~5/27
+        s, e, clamped = resolve_range("2026-05-01~2026-05-27", today=FIXED)
+        assert e == FIXED
+        assert (e - s).days + 1 == 7
+        assert s == dt.date(2026, 5, 21)
+        assert clamped is True
+
+    def test_last_30_days_clamped(self):
+        s, e, clamped = resolve_range("지난 30일", today=FIXED)
+        assert (e - s).days + 1 == 7
+        assert clamped is True
+
+    def test_tuple_spec(self):
+        assert resolve_range(("2026-05-20", "2026-05-22"), today=FIXED) == (
+            dt.date(2026, 5, 20), dt.date(2026, 5, 22), False)
+
+    def test_tuple_none_none_is_yesterday(self):
+        assert resolve_range((None, None), today=FIXED) == (YEST, YEST, False)
+
+    def test_invalid_raises(self):
+        with pytest.raises(ValueError):
+            resolve_range("garbage", today=FIXED)
+
+
+class TestRoomEntries:
+    def test_normalizes_missing_mode_to_always(self):
+        cfg = {"rooms": [{"name": "공부방", "enabled": True}]}
+        entries = room_entries(cfg)
+        assert entries == [{"name": "공부방", "mode": "always", "link": "", "enabled": True}]
+
+    def test_keeps_optional_mode(self):
+        cfg = {"rooms": [{"name": "방", "mode": "optional", "enabled": True, "link": "u"}]}
+        assert room_entries(cfg)[0]["mode"] == "optional"
+        assert room_entries(cfg)[0]["link"] == "u"
+
+    def test_invalid_mode_falls_back_to_always(self):
+        cfg = {"rooms": [{"name": "방", "mode": "weird", "enabled": True}]}
+        assert room_entries(cfg)[0]["mode"] == "always"
+
+    def test_skips_entries_without_name(self):
+        cfg = {"rooms": [{"enabled": True}, "not-a-dict", {"name": "ok", "enabled": True}]}
+        names = [e["name"] for e in room_entries(cfg)]
+        assert names == ["ok"]
+
+    def test_empty(self):
+        assert room_entries({}) == []
+
+
+class TestAlwaysRooms:
+    def test_only_enabled_always(self):
+        cfg = {"rooms": [
+            {"name": "A", "mode": "always", "enabled": True},
+            {"name": "B", "mode": "optional", "enabled": True},
+            {"name": "C", "mode": "always", "enabled": False},
+            {"name": "D", "enabled": True},  # missing mode → always
+        ]}
+        assert always_rooms(cfg) == ["A", "D"]
+
+    def test_empty(self):
+        assert always_rooms({}) == []
 
 
 class TestSafeRoomDir:

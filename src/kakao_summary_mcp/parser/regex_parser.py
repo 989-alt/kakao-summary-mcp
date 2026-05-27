@@ -22,7 +22,25 @@ def _to_24h(ampm: str, h: int, m: int) -> tuple[int, int]:
     return (h if h == 12 else h + 12, m)
 
 
-def parse_file(path: Path, room: str, target_date: dt.date | None = None) -> list[Message]:
+def parse_file(
+    path: Path,
+    room: str,
+    target_date: dt.date | None = None,
+    start_date: dt.date | None = None,
+    end_date: dt.date | None = None,
+) -> list[Message]:
+    """PC카톡 내보내기 .txt를 파싱.
+
+    날짜 필터:
+        - start_date/end_date가 주어지면 [start, end] (양끝 포함) 범위로 필터.
+        - 하위호환: target_date만 주어지면 그 날짜 단일로 필터(start=end=target).
+        - 셋 다 None이면 전체 반환.
+    """
+    if start_date is None and end_date is None and target_date is not None:
+        start_date = end_date = target_date
+    if start_date is not None and end_date is not None and start_date > end_date:
+        start_date, end_date = end_date, start_date
+
     msgs: list[Message] = []
     cur_date: dt.date | None = None
     last_msg: Message | None = None
@@ -62,9 +80,9 @@ def parse_file(path: Path, room: str, target_date: dt.date | None = None) -> lis
             if last_msg is not None and line.strip():
                 last_msg.text += "\n" + line
 
-    if target_date is not None:
-        target_iso = target_date.isoformat()
-        msgs = [m for m in msgs if m.date == target_iso]
+    if start_date is not None and end_date is not None:
+        s_iso, e_iso = start_date.isoformat(), end_date.isoformat()
+        msgs = [m for m in msgs if s_iso <= m.date <= e_iso]
     return msgs
 
 

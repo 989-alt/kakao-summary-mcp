@@ -114,3 +114,45 @@ class TestParseFile:
         d = dt.datetime.fromtimestamp(msg.ts_epoch)
         assert d.hour == 13
         assert d.minute == 30
+
+
+class TestParseFileRange:
+    def test_range_includes_both_days(self, sample_txt):
+        msgs = parse_file(
+            sample_txt, room="r",
+            start_date=dt.date(2026, 5, 26), end_date=dt.date(2026, 5, 27),
+        )
+        dates = {m.date for m in msgs}
+        assert dates == {"2026-05-26", "2026-05-27"}
+        assert len(msgs) == 9  # all messages across both days
+
+    def test_range_single_day_excludes_other(self, sample_txt):
+        msgs = parse_file(
+            sample_txt, room="r",
+            start_date=dt.date(2026, 5, 27), end_date=dt.date(2026, 5, 27),
+        )
+        assert {m.date for m in msgs} == {"2026-05-27"}
+        assert len(msgs) == 2
+
+    def test_range_reversed_is_swapped(self, sample_txt):
+        msgs = parse_file(
+            sample_txt, room="r",
+            start_date=dt.date(2026, 5, 27), end_date=dt.date(2026, 5, 26),
+        )
+        assert {m.date for m in msgs} == {"2026-05-26", "2026-05-27"}
+
+    def test_range_no_match_empty(self, sample_txt):
+        msgs = parse_file(
+            sample_txt, room="r",
+            start_date=dt.date(2025, 1, 1), end_date=dt.date(2025, 1, 31),
+        )
+        assert msgs == []
+
+    def test_target_date_still_works(self, sample_txt):
+        """Back-compat: target_date alone filters to that single day."""
+        msgs = parse_file(sample_txt, room="r", target_date=dt.date(2026, 5, 26))
+        assert {m.date for m in msgs} == {"2026-05-26"}
+
+    def test_no_filter_returns_all(self, sample_txt):
+        msgs = parse_file(sample_txt, room="r")
+        assert len(msgs) == 9

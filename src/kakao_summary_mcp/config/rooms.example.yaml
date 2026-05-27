@@ -3,12 +3,16 @@
 
 rooms:
   - name: "공부방"          # PC카톡에 표시되는 채팅방 정확한 이름
+    mode: always            # always(="요약"에 자동 포함) | optional(지목 시만)
+    link: ""                # 오픈채팅 링크 — 식별·메모용(추출엔 미사용)
     enabled: true
   - name: "부동산방"
+    mode: optional
+    link: ""
     enabled: false
 
 defaults:
-  date: today               # today | yesterday
+  range: yesterday          # 기본 요약 기간: yesterday(전일). 최대 7일.
   top_k_per_topic: 10
   top_k_query: 15
 
