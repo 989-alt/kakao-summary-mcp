@@ -52,8 +52,8 @@ ocr = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/sunhak989/kakao-summary-mcp"
-Issues = "https://github.com/sunhak989/kakao-summary-mcp/issues"
+Homepage = "https://github.com/989-alt/kakao-summary-mcp"
+Issues = "https://github.com/989-alt/kakao-summary-mcp/issues"
 
 [project.scripts]
 kakao-summary-mcp = "kakao_summary_mcp.server:main"
@@ -68,4 +68,4 @@ filterwarnings = ["ignore::DeprecationWarning"]
 packages = ["src/kakao_summary_mcp"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/", "README.md", "pyproject.toml"]
+include = ["src/", "skill/", "README.md", "LICENSE", "pyproject.toml"]

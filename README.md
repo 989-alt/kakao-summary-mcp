@@ -15,20 +15,27 @@ PC 카카오톡 오픈채팅방 하루치 대화를 자동으로 추출·요약�
 | 디스크 | bge-m3 모델 약 2GB + 대화 인덱스 |
 | 권한 | UI 자동화를 위해 다른 창이 PC카톡을 가리지 않아야 함 |
 
-📌 셋업 부담은 최소화돼 있습니다. 기본 추출은 PC카톡 **`Ctrl+S` 단축키**를 사용하며, 단축키가 안 통하는 환경에서는 **UIA(Windows Accessibility)** 로 메뉴를 자동 탐색합니다. 둘 다 실패해야 사용자가 직접 캡처한 템플릿 이미지가 필요합니다.
+📌 추출은 두 가지 방식(`kakao_sync_chats`의 `method`)을 지원합니다.
+
+- **`method:"ocr"` (기본 · 진짜 백그라운드)** — `PrintWindow`로 가려진 대화창을 캡처하고 포커스 없이 스크롤(`WM_MOUSEWHEEL`)하며 OCR. **마우스·키보드·포커스를 전혀 뺏지 않음.** OCR 엔진은 Windows 내장 OCR(한국어 정확·고속, 모델 다운로드 없음) 1순위, 언어팩이 없으면 easyocr 폴백. 일부 글자 오인식이 있을 수 있어 **요약엔 충분, 정확한 원문이 필요하면 `export` 권장**. (`pip install -e ".[ocr]"` + Windows '한국어' OCR 언어팩 권장)
+- **`method:"export"` (무손실 · 포커스 필요)** — 네이티브 '대화 내용 내보내기' .txt. 정확하지만 추출 순간 카톡 창이 잠깐 앞으로 나옵니다. 메뉴 클릭은 3-tier fallback(① `Ctrl+S` 단축키 → ② UIA 메뉴 탐색 → ③ 사용자 캡처 템플릿 이미지)으로 자동화됩니다.
+
+> **공통 전제**: 대상 방의 PC카톡 **대화창이 별도 창으로 열려 있어야** 합니다(다른 창에 가려져도 OK, **트레이/최소화는 ❌** — 창 핸들이 사라집니다).
 
 ## 설치
 
 ### Option A — 로컬 개발 설치 (권장: 현재 단계)
 ```powershell
-git clone https://github.com/sunhak989/kakao-summary-mcp.git
+git clone https://github.com/989-alt/kakao-summary-mcp.git
 cd kakao-summary-mcp
 pip install -e .
+# 진짜 백그라운드 OCR 추출까지 쓰려면(권장):
+pip install -e ".[ocr]"
 ```
 
 ### Option B — uvx로 zero-install 실행 (GitHub 직접)
 ```powershell
-uvx --from git+https://github.com/sunhak989/kakao-summary-mcp kakao-summary-mcp
+uvx --from git+https://github.com/989-alt/kakao-summary-mcp kakao-summary-mcp
 ```
 
 > PyPI 배포는 아직 안 됨. `pip install kakao-summary-mcp` 는 곧 지원 예정.
@@ -51,10 +58,7 @@ uvx --from git+https://github.com/sunhak989/kakao-summary-mcp kakao-summary-mcp
    - 답변을 받아 `kakao_register_rooms`로 자동 등록
    - `kakao_sync_chats`로 추출 진행
 
-추출은 **3-tier fallback**으로 동작:
-- **Tier 1**: 카톡 채팅창에서 `Ctrl+S` 단축키 (가장 빠르고 사용자 행동 0)
-- **Tier 2**: UIA로 ☰ 메뉴 자동 탐색 (단축키 실패 시)
-- **Tier 3**: 사용자가 직접 캡처한 템플릿 이미지 (위 둘 다 실패 시 최후)
+기본은 `method:"ocr"`(진짜 백그라운드)로 동작하며, 정확한 원문이 필요할 때만 `method:"export"`(무손실, 포커스 필요)를 씁니다. `export`의 메뉴 클릭은 `Ctrl+S` → UIA → 템플릿 이미지 3-tier로 자동화됩니다(위 "동작 환경" 참고).
 
 진단이 필요하면:
 ```powershell
@@ -93,6 +97,21 @@ claude mcp add kakao-summary -- kakao-summary-mcp
 
 ### Cursor / Zed
 표준 MCP stdio 서버라 동일하게 `command: "kakao-summary-mcp"` 형태로 등록.
+
+## Claude skill 설치 (선택, 권장)
+
+이 레포의 `skill/kakao-summary/`에는 **Claude Code용 skill**이 함께 들어 있습니다. 설치하면 `/kakao-summary` 슬래시 명령과 "카톡 요약해줘" 같은 자연어 트리거로 위 MCP 도구들이 정해진 흐름(진단 → 방 등록 인터뷰 → 추출 → 토픽 요약 → 원문 드릴다운)대로 자동 호출됩니다. MCP만 등록해도 동작하지만, skill을 깔면 사용 흐름이 훨씬 매끄럽습니다.
+
+```powershell
+# Windows (Claude Code 사용자 skill 디렉터리로 복사)
+xcopy /E /I skill\kakao-summary "$env:USERPROFILE\.claude\skills\kakao-summary"
+```
+```bash
+# macOS / Linux
+cp -r skill/kakao-summary ~/.claude/skills/kakao-summary
+```
+
+새 Claude 세션에서 `/kakao-summary` 또는 "어제 카톡 요약해줘"라고 입력하면 됩니다.
 
 ## 제공되는 도구 5개
 
