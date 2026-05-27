@@ -76,6 +76,7 @@ def main() -> int:
     # 4) Sync over an explicit 2-day range
     sync = json.loads(run(fn(server.kakao_sync_chats)(server.SyncChatsInput(
         range="2026-05-26~2026-05-27", rooms=[ROOM], skip_extract=True,
+        method="export",
     ))))
     print(f"③ sync_chats: {sync['date_start']}~{sync['date_end']} "
           f"clamped={sync['clamped']} turns={sync['total_turns']} "
@@ -103,7 +104,8 @@ def main() -> int:
 
     # 7) Clamp behavior (>7 days)
     clamp = json.loads(run(fn(server.kakao_sync_chats)(server.SyncChatsInput(
-        range="2026-05-01~2026-05-27", rooms=[ROOM], skip_extract=True))))
+        range="2026-05-01~2026-05-27", rooms=[ROOM], skip_extract=True,
+        method="export"))))
     print(f"⑥ clamp test: {clamp['date_start']}~{clamp['date_end']} "
           f"clamped={clamp['clamped']} notes={clamp['notes']}")
     assert clamp["clamped"] is True

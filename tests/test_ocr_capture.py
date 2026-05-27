@@ -10,6 +10,7 @@ from kakao_summary_mcp.extractor.ocr_capture import (
     dedupe_consecutive,
     filter_days_in_range,
     merge_overlapping,
+    messages_from_ocr_lines,
     split_by_date,
     stitch_scrolls,
 )
@@ -121,6 +122,45 @@ class TestSplitByDate:
         assert len(days) == 1
         assert days[0].date == "2026-05-27"
         assert days[0].lines == ["pre-separator line", "post line"]
+
+
+class TestMessagesFromOcrLines:
+    def test_builds_messages_with_date_and_text(self):
+        lines = ["2026년 5월 27일 수요일", "회의 10시", "점심 같이 먹어요"]
+        msgs = messages_from_ocr_lines("방", lines, default_date="2026-05-27")
+        assert [m.text for m in msgs] == ["회의 10시", "점심 같이 먹어요"]
+        assert all(m.date == "2026-05-27" for m in msgs)
+        assert all(m.room == "방" and m.sender == "(OCR)" for m in msgs)
+
+    def test_time_only_line_sets_timestamp(self):
+        # OCR often reads ':' as '.'; "오전 9.15" alone is a time marker, not content
+        lines = ["오전 9.15", "안녕하세요"]
+        msgs = messages_from_ocr_lines("방", lines, default_date="2026-05-27")
+        assert len(msgs) == 1
+        assert msgs[0].text == "안녕하세요"
+        assert msgs[0].ts == "09:15"
+
+    def test_pm_time_converted_24h(self):
+        lines = ["오후 1:30", "오후 회의"]
+        msgs = messages_from_ocr_lines("방", lines, default_date="2026-05-27")
+        assert msgs[0].ts == "13:30"
+
+    def test_inline_leading_time_stripped_into_text_time(self):
+        lines = ["오전 8:05 좋은 아침입니다"]
+        msgs = messages_from_ocr_lines("방", lines, default_date="2026-05-27")
+        assert len(msgs) == 1
+        assert msgs[0].ts == "08:05"
+        assert msgs[0].text == "좋은 아침입니다"
+
+    def test_seq_resets_per_day_and_msg_id_format(self):
+        lines = ["2026년 5월 26일 화요일", "a", "b",
+                 "2026년 5월 27일 수요일", "c"]
+        msgs = messages_from_ocr_lines("room", lines, default_date="2026-05-26")
+        d26 = [m for m in msgs if m.date == "2026-05-26"]
+        d27 = [m for m in msgs if m.date == "2026-05-27"]
+        assert d26[0].msg_id == "room:20260526:00000"
+        assert d26[1].msg_id == "room:20260526:00001"
+        assert d27[0].msg_id == "room:20260527:00000"
 
 
 class TestFilterDaysInRange:

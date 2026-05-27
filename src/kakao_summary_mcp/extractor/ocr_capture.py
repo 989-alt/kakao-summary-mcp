@@ -160,6 +160,70 @@ def filter_days_in_range(days: list[OcrDay], start_iso: str, end_iso: str) -> li
     return [d for d in days if start_iso <= d.date <= end_iso]
 
 
+# OCR은 ':'를 '.'/';'로 자주 오인 → 구분자 관대하게
+_TIME_RE = re.compile(r"^(오전|오후)?\s*(\d{1,2})[:.;](\d{2})\b")
+_TIME_ONLY_RE = re.compile(r"^(오전|오후)?\s*\d{1,2}[:.;]\d{2}\.?$")
+
+
+def _parse_time_token(line: str) -> str | None:
+    """줄 앞부분의 '오전/오후 H:MM' 류 시각을 24h 'HH:MM'로. 없으면 None."""
+    m = _TIME_RE.search(line)
+    if not m:
+        return None
+    ampm, h, mnt = m.group(1), int(m.group(2)), int(m.group(3))
+    if mnt > 59 or h > 23:
+        return None
+    if ampm == "오전":
+        h = 0 if h == 12 else h
+    elif ampm == "오후":
+        h = h if h == 12 else h + 12
+    return f"{h:02d}:{mnt:02d}"
+
+
+def messages_from_ocr_lines(room: str, lines: list[str],
+                            default_date: str):
+    """OCR 줄 목록을 (베스트에포트) Message 객체 리스트로 변환.
+
+    OCR은 발신자·정확 시각을 안정적으로 주지 못하므로:
+    - 날짜는 구분선("YYYY년 M월 D일")으로 분할.
+    - 시각: '오전/오후 H:MM'만 있는 줄은 시각 마커로 보고 이후 메시지에 적용.
+    - 발신자: 식별 불가 → '(OCR)' 고정(요약·검색엔 본문이 핵심).
+    각 콘텐츠 줄 1개 = Message 1개. seq는 일자별 0부터.
+    """
+    import datetime as _dt
+
+    from ..parser.schema import Message
+
+    msgs: list = []
+    days = split_by_date(lines, default_date=default_date)
+    for day in days:
+        try:
+            d = _dt.date.fromisoformat(day.date)
+        except ValueError:
+            continue
+        cur_time = "00:00"
+        seq = 0
+        for ln in day.lines:
+            t = _parse_time_token(ln)
+            if t and _TIME_ONLY_RE.match(ln.strip()):
+                cur_time = t  # 시각만 있는 줄 → 마커, 본문 아님
+                continue
+            if t:  # 본문 앞에 시각이 붙은 경우: 시각 갱신 + 본문은 시각 제거
+                cur_time = t
+                ln = _TIME_RE.sub("", ln, count=1).strip()
+                if not ln:
+                    continue
+            hh, mm = int(cur_time[:2]), int(cur_time[3:])
+            epoch = int(_dt.datetime.combine(d, _dt.time(hh, mm)).timestamp())
+            msgs.append(Message(
+                msg_id=f"{room}:{d:%Y%m%d}:{seq:05d}",
+                room=room, date=day.date, ts=cur_time, ts_epoch=epoch,
+                sender="(OCR)", text=ln, seq=seq,
+            ))
+            seq += 1
+    return msgs
+
+
 # ---------------------------------------------------------------------------
 # Win32 캡처/스크롤 (실 환경 전용) — import 시점에 pywin32 없으면 지연 에러
 # ---------------------------------------------------------------------------

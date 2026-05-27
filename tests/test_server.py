@@ -105,6 +105,7 @@ class TestSyncChatsRange:
         fn = _maybe_fn(server.kakao_sync_chats)
         out = json.loads(_call(fn(server.SyncChatsInput(
             range="2026-05-26~2026-05-27", rooms=[room], skip_extract=True,
+            method="export",
         ))))
         assert out["date_start"] == "2026-05-26"
         assert out["date_end"] == "2026-05-27"
@@ -119,7 +120,7 @@ class TestSyncChatsRange:
         _place_sample(tmp_home, room, "2026-05-27")
         fn = _maybe_fn(server.kakao_sync_chats)
         out = json.loads(_call(fn(server.SyncChatsInput(
-            date="2026-05-27", rooms=[room], skip_extract=True,
+            date="2026-05-27", rooms=[room], skip_extract=True, method="export",
         ))))
         assert out["date_start"] == out["date_end"] == "2026-05-27"
         assert {t["date"] for t in out["turns"]} == {"2026-05-27"}
@@ -130,6 +131,7 @@ class TestSyncChatsRange:
         fn = _maybe_fn(server.kakao_sync_chats)
         out = json.loads(_call(fn(server.SyncChatsInput(
             range="2026-05-01~2026-05-27", rooms=[room], skip_extract=True,
+            method="export",
         ))))
         assert out["clamped"] is True
         assert out["date_end"] == "2026-05-27"
@@ -147,14 +149,14 @@ class TestSyncChatsRange:
         _place_sample(tmp_home, "공부방", "2026-05-27")
         fn = _maybe_fn(server.kakao_sync_chats)
         out = json.loads(_call(fn(server.SyncChatsInput(
-            range="2026-05-26~2026-05-27", skip_extract=True,
+            range="2026-05-26~2026-05-27", skip_extract=True, method="export",
         ))))
         assert out["rooms_attempted"] == ["공부방"]  # optional excluded
 
     def test_skip_extract_missing_raw_is_reported(self, tmp_home):
         fn = _maybe_fn(server.kakao_sync_chats)
         out = json.loads(_call(fn(server.SyncChatsInput(
-            range="2026-05-27", rooms=["없는방"], skip_extract=True,
+            range="2026-05-27", rooms=["없는방"], skip_extract=True, method="export",
         ))))
         assert out["rooms_failed"]
         assert "없는방" == out["rooms_failed"][0]["room"]
@@ -168,3 +170,43 @@ class TestSyncChatsRange:
         fn = _maybe_fn(server.kakao_sync_chats)
         out = json.loads(_call(fn(server.SyncChatsInput(skip_extract=True))))
         assert "error" in out
+
+
+class TestSyncChatsOcrMethod:
+    """method='ocr' routing — live capture stubbed with canned OCR lines."""
+
+    def test_ocr_method_indexes_extracted_lines(self, tmp_home, monkeypatch):
+        import kakao_summary_mcp.extractor.ocr_capture as oc
+
+        canned = [
+            "2026년 5월 27일 수요일",
+            "오전 9:15",
+            "회의는 10시에 시작합니다",
+            "자료는 디스코드에 올렸어요",
+        ]
+        monkeypatch.setattr(oc, "extract_conversation",
+                            lambda room, **kw: list(canned))
+
+        fn = _maybe_fn(server.kakao_sync_chats)
+        out = json.loads(_call(fn(server.SyncChatsInput(
+            range="2026-05-27", rooms=["바이브 디자인 랩"], method="ocr",
+        ))))
+        assert "바이브 디자인 랩" in out["rooms_succeeded"]
+        assert out["total_turns"] > 0
+        texts = " ".join(t["text"] for t in out["turns"])
+        assert "회의는 10시에 시작합니다" in texts
+        assert all(t["date"] == "2026-05-27" for t in out["turns"])
+
+    def test_ocr_method_window_not_found_reported(self, tmp_home, monkeypatch):
+        import kakao_summary_mcp.extractor.ocr_capture as oc
+
+        def boom(room, **kw):
+            raise RuntimeError(f"'{room}' 채팅 창을 찾지 못했습니다")
+
+        monkeypatch.setattr(oc, "extract_conversation", boom)
+        fn = _maybe_fn(server.kakao_sync_chats)
+        out = json.loads(_call(fn(server.SyncChatsInput(
+            range="2026-05-27", rooms=["없는방"], method="ocr",
+        ))))
+        assert out["rooms_failed"]
+        assert "찾지 못했습니다" in out["rooms_failed"][0]["error"]

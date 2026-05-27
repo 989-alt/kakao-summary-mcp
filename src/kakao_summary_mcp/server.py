@@ -62,6 +62,14 @@ class SyncChatsInput(BaseModel):
         ),
         max_length=20,
     )
+    method: str = Field(
+        default="ocr",
+        description=(
+            "추출 방식. 'ocr'(기본, 진짜 백그라운드: PrintWindow+스크롤+OCR, 포커스 "
+            "안 뺏음, 단 OCR 손실) | 'export'(네이티브 .txt 내보내기, 무손실이나 "
+            "포커스 필요). 대상 방의 PC카톡 대화창이 열려 있어야 함(트레이 ❌)."
+        ),
+    )
     skip_extract: bool = Field(
         default=False,
         description=(
@@ -117,6 +125,22 @@ def _extract_room(room: str, raw_path, templates_dir, logs_dir) -> None:
     # (백그라운드 tier는 포커스를 뺏지 않고, 포그라운드-그랩 tier만 잠깐 앞으로)
     _log(f"[{room}] open room & export chat → {raw_path}")
     export_current_room_chat(room, raw_path, templates_dir, logs_dir)
+
+
+def _extract_room_ocr(room: str, start_date, end_date):
+    """진짜 백그라운드 OCR 추출 → 범위 내 Message 리스트.
+
+    PrintWindow+스크롤+OCR(포커스 미탈취). 대상 방 대화창이 열려 있어야 함.
+    """
+    from .extractor import ocr_capture as oc
+
+    # 범위 일수에 비례해 스크롤 화면 수 산정(하루≈8화면, 상한 40)
+    span_days = (end_date - start_date).days + 1
+    max_screens = min(40, max(6, span_days * 8))
+    lines = oc.extract_conversation(room, max_screens=max_screens)
+    msgs = oc.messages_from_ocr_lines(room, lines, default_date=end_date.isoformat())
+    s_iso, e_iso = start_date.isoformat(), end_date.isoformat()
+    return [m for m in msgs if s_iso <= m.date <= e_iso]
 
 
 @mcp.tool(
@@ -219,16 +243,18 @@ async def kakao_sync_chats(params: SyncChatsInput) -> str:
         parsed_path = paths["parsed"] / room_dir / f"{range_tag}.jsonl"
 
         try:
-            if not params.skip_extract:
-                raw_path.parent.mkdir(parents=True, exist_ok=True)
-                _extract_room(room, raw_path, paths["templates"], paths["logs"])
-            elif not raw_path.exists():
-                raise FileNotFoundError(
-                    f"skip_extract=true인데 raw 파일이 없습니다: {raw_path}"
-                )
-
-            msgs = parse_file(raw_path, room,
-                              start_date=start_date, end_date=end_date)
+            if params.method == "ocr":
+                msgs = _extract_room_ocr(room, start_date, end_date)
+            else:
+                if not params.skip_extract:
+                    raw_path.parent.mkdir(parents=True, exist_ok=True)
+                    _extract_room(room, raw_path, paths["templates"], paths["logs"])
+                elif not raw_path.exists():
+                    raise FileNotFoundError(
+                        f"skip_extract=true인데 raw 파일이 없습니다: {raw_path}"
+                    )
+                msgs = parse_file(raw_path, room,
+                                  start_date=start_date, end_date=end_date)
             if not msgs:
                 _log(f"[{room}] 해당 날짜에 메시지 없음")
                 succeeded.append(room)
