@@ -149,9 +149,15 @@ parse_file 범위 필터, register_rooms mode/link 병합, always/enabled 선택
 **한계:** OCR이라 손실 — 고유명사·링크 일부 오인식, 화면에 안 보이는 메시지는 못 잡음
 (스크롤로 보강). 원문 정확 일치 검색엔 부적합.
 
-**무손실 후보(미검증, 슬라이드쇼 종료 후 테스트 예정):** `PostMessage`로 채팅 창에
-Ctrl+S를 포스트 → 네이티브 '다른 이름으로 저장' 다이얼로그(이건 UIA 트리 있음)를
-핸들로 제어해 .txt 저장. 되면 **무손실 + 백그라운드**. 이게 최선의 1순위.
+**무손실 백그라운드 트리거 — 전부 실측으로 불가 판정 (2026-05-27):**
+- `PostMessage` Ctrl+S(WM_KEYDOWN/CHAR/KEYUP) → 다이얼로그 **안 뜸**. 앱이
+  `GetKeyState(Ctrl)`로 수정자를 확인하는데 포스트 메시지는 키 상태를 안 바꿈.
+- `WM_COMMAND` 메뉴 ID 경로 → `GetMenu(chat)=0`(표준 HMENU 없음) → 불가.
+- 실제 Ctrl+S(SendInput)·UIA invoke → 각각 포그라운드 필요/UIA 트리 없음으로 불가.
+- **결론: 무손실 추출은 백그라운드로 트리거 불가. 카톡 창이 포그라운드일 때
+  (실제 Ctrl+S = `method="export"`)만 가능.** 즉 무손실=포그라운드, 백그라운드=OCR(손실).
+  최종적으로 두 경로를 제공: `method="ocr"`(백그라운드·손실, 기본),
+  `method="export"`(포그라운드·무손실). 사용자가 창을 앞에 두거나 export를 고를 때 무손실.
 
 **기존 capture.py 상태:** Tier1(UIA invoke)·Tier2(포그라운드-그랩)는 위 1·2로
 사실상 동작 불가. 오케스트레이션 골격·날짜범위·방모드·링크 등록은 유효하며,
