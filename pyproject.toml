@@ -9,7 +9,7 @@ description = "MCP server that crawls, summarizes, and semantically searches Kak
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "sunhak989", email = "989-alt@users.noreply.github.com" }]
+authors = [{ name = "989-alt" }]
 keywords = ["mcp", "kakaotalk", "openchat", "summarization", "semantic-search"]
 classifiers = [
     "Development Status :: 3 - Alpha",
